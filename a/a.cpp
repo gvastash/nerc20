@@ -84,6 +84,11 @@ void ReadInput() {
     for (i64 i = 0; i < VmsCount; i++) {
         cin >> Allocation[i] >> Target[i];
     }
+
+    for (i64 i = 0; i < VmsCount; i++) {
+        Servers[Allocation[i]].Cores -= Vms[i].Cores;
+        Servers[Allocation[i]].Memory -= Vms[i].Memory;
+    }
 }
 
 void WriteOutput() {
@@ -101,31 +106,125 @@ bool IsEnough(i64 serverId, i64 vmId) {
     return Servers[serverId].Cores >= Vms[vmId].Cores && Servers[serverId].Memory >= Vms[vmId].Memory;
 }
 
-void Simlulate(TStep& step) {
+void SimulateTransfer(TMove& move) {
+    Servers[move.NewServerId].Cores -= Vms[move.VmId].Cores;
+    Servers[move.NewServerId].Memory -= Vms[move.VmId].Memory;
+
+    Allocation[move.VmId] = move.NewServerId;
+}
+
+void SimulateTransfer(TStep& step) {
     for (auto& move : step) {
-        Servers[move.NewServerId].Cores += Vms[move.VmId].Cores;
-        Servers[move.NewServerId].Memory += Vms[move.VmId].Memory;
-
-        Servers[move.OldServerId].Cores -= Vms[move.VmId].Cores;
-        Servers[move.OldServerId].Memory -= Vms[move.VmId].Memory;
-
-        Allocation[move.VmId] = move.NewServerId;
+        SimulateTransfer(move);
     }
 }
 
-void Rollback(TStep& step) {
+void SimulateCleanup(TMove& move) {
+    Servers[move.OldServerId].Cores += Vms[move.VmId].Cores;
+    Servers[move.OldServerId].Memory += Vms[move.VmId].Memory;
+}
+
+void SimulateCleanup(TStep& step) {
     for (auto& move : step) {
-        Servers[move.NewServerId].Cores -= Vms[move.VmId].Cores;
-        Servers[move.NewServerId].Memory -= Vms[move.VmId].Memory;
-
-        Servers[move.OldServerId].Cores += Vms[move.VmId].Cores;
-        Servers[move.OldServerId].Memory += Vms[move.VmId].Memory;
-
-        Allocation[move.VmId] = move.OldServerId;
+        SimulateCleanup(move);
     }
 }
 
+set<i64> CalculateMissedVms() {
+    set<i64> misses;
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Allocation[i] == Target[i]) {
+            continue;
+        }
+        misses.insert(i);
+    }
+    return misses;
+}
 
+void TransferGreedly() {
+    bool moved = true;
+    while (moved) {
+        moved = false;
+
+        Steps.push_back(TStep());
+        vector<i64> networkUsage(ServersCount);
+        for (i64 i = 0; i < VmsCount; i++) {
+            if (Allocation[i] == Target[i]) {
+                continue;
+            }
+            if (!IsEnough(Target[i], i)) {
+                continue;
+            }
+            if (networkUsage[Allocation[i]] >= 2) {
+                continue;
+            }
+            if (networkUsage[Target[i]] >= 2) {
+                continue;
+            }
+
+            Steps.back().push_back({ Allocation[i], Target[i], i });
+            networkUsage[Allocation[i]] += 1;
+            networkUsage[Target[i]] += 1;
+            SimulateTransfer(Steps.back().back());
+            moved = true;
+        }
+
+        SimulateCleanup(Steps.back());
+    }
+    Steps.pop_back();
+}
+
+void TransferMissedVms(set<i64>& missedVms) {
+    set<i64> missedServers;
+    for (auto missedVm : missedVms) {
+        missedServers.insert(Target[missedVm]);
+    }
+
+    set<i64> spareServers;
+    for (i64 i = 0; i < ServersCount; i++) {
+        if (missedServers.count(i)) {
+            continue;
+        }
+        spareServers.insert(i);
+    }
+
+    bool moved = true;
+    while (moved) {
+        moved = false;
+
+        Steps.push_back(TStep());
+        vector<i64> networkUsage(ServersCount);
+        for (i64 i = 0; i < VmsCount; i++) {
+            if (Allocation[i] == Target[i]) {
+                continue;
+            }
+            if (spareServers.count(Allocation[i])) {
+                continue;
+            }
+            if (networkUsage[Allocation[i]] >= 2) {
+                continue;
+            }
+            for (auto spareServer : spareServers) {
+                if (!IsEnough(spareServer, i)) {
+                    continue;
+                }
+                if (networkUsage[spareServer] >= 2) {
+                    continue;
+                }
+
+                Steps.back().push_back({ Allocation[i], spareServer, i });
+                networkUsage[Allocation[i]] += 1;
+                networkUsage[spareServer] += 1;
+                SimulateTransfer(Steps.back().back());
+                moved = true;
+                break;
+            }
+        }
+
+        SimulateCleanup(Steps.back());
+    }
+    Steps.pop_back();
+}
 
 int main(int argc, char* argv[]) {
     ios::sync_with_stdio(0); cin.tie(0); cout.tie(0); cout.precision(15); cout.setf(ios::fixed); cerr.precision(15); cerr.setf(ios::fixed);
@@ -136,29 +235,14 @@ int main(int argc, char* argv[]) {
 
     ReadInput();
 
-    bool moved = true;
-    while (moved) {
-        moved = false;
-        for (i64 i = 0; i < VmsCount; i++) {
-            if (Allocation[i] == Target[i]) {
-                continue;
-            }
-            if (!IsEnough(Target[i], i)) {
-                continue;
-            }
-            Steps.push_back(TStep());
-            Steps.back().push_back({ Allocation[i], Target[i], i });
-            Simlulate(Steps.back());
-            moved = true;
+    while (true) {
+        TransferGreedly();
+        auto missedVms = CalculateMissedVms();
+        if (missedVms.empty()) {
             break;
         }
-    }
 
-    for (i64 i = 0; i < VmsCount; i++) {
-        if (Allocation[i] == Target[i]) {
-            continue;
-        }
-        cerr << "!!!" << i << endl;
+        TransferMissedVms(missedVms);
     }
 
     WriteOutput();
