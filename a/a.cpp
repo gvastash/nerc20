@@ -386,12 +386,69 @@ void CompactTwoSteps(i64 targetStart, i64 missedStart) {
     }
 }
 
+struct TRandom {
+    using Type = i64;
+    mt19937 Rng;
+    uniform_int_distribution<Type> Dist;
+
+    TRandom() : Rng((chrono::steady_clock::now().time_since_epoch().count())), Dist(0ll, std::numeric_limits<Type>::max()) {
+    }
+
+    Type GetRandomNumber() {
+        return Dist(Rng);
+    }
+};
+
+void GenerateSample(i64 serversCount, i64 vmsCount, i64 lowVmMemoryLimit, i64 highVmMemoryLimit, i64 lowVmCoresLimit, i64 highVmCoresLimit) {
+    vector<TResource> servers(serversCount);
+    vector<TResource> vms(vmsCount);
+    vector<i64> allocation(vmsCount);
+    vector<i64> target(vmsCount);
+
+    TRandom rng;
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        allocation[i] = rng.GetRandomNumber() % serversCount;
+        target[i] = rng.GetRandomNumber() % serversCount;
+        vms[i].Cores = lowVmCoresLimit + rng.GetRandomNumber() % (highVmCoresLimit - lowVmCoresLimit + 1);
+        vms[i].Memory = lowVmMemoryLimit + rng.GetRandomNumber() % (highVmMemoryLimit - lowVmMemoryLimit + 1);
+
+        servers[allocation[i]].Cores += vms[i].Cores;
+        servers[allocation[i]].Memory += vms[i].Memory;
+        servers[target[i]].Cores += vms[i].Cores;
+        servers[target[i]].Memory += vms[i].Memory;
+    }
+
+    for (i64 i = 0; i < serversCount; i++) {
+        servers[i].Cores += highVmCoresLimit;
+        servers[i].Memory += highVmMemoryLimit;
+    }
+
+    cout << serversCount << " " << vmsCount << endl;
+    for (i64 i = 0; i < serversCount; i++) {
+        cout << servers[i].Cores << " " << servers[i].Memory << endl;
+    }
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        cout << vms[i].Cores << " " << vms[i].Memory << endl;
+    }
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        cout << allocation[i] << " " << target[i] << endl;
+    }
+}
+
+
 int main(int argc, char* argv[]) {
     ios::sync_with_stdio(0); cin.tie(0); cout.tie(0); cout.precision(15); cout.setf(ios::fixed); cerr.precision(15); cerr.setf(ios::fixed);
 
     if (sizeof(i64) != sizeof(long long int)) {
         cerr << "i64 != long long int" << endl;
     }
+
+    //GenerateSample(1'000, 1'000'000, 1, 200, 1, 500);
+    //GenerateSample(100, 10'000, 1, 200, 1, 500);
+    //return 0;
 
     ReadInput();
 
@@ -410,7 +467,10 @@ int main(int argc, char* argv[]) {
         CompactTwoSteps(targetStart, missedStart);
     }
 
-    WriteOutput();
+    //WriteOutput();
+
+    i64 R = CalculateScore();
+    cerr << R << " = " << Steps.size() << " * " << R / Steps.size() << endl;
 
     return 0;
 }
