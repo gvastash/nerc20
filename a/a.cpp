@@ -52,6 +52,31 @@ struct TMove {
     i64 OldServerId;
     i64 NewServerId;
     i64 VmId;
+
+    bool operator<(const TMove& move) const {
+        if (OldServerId < move.OldServerId) {
+            return true;
+        }
+        if (OldServerId > move.OldServerId) {
+            return false;
+        }
+
+        if (NewServerId < move.NewServerId) {
+            return true;
+        }
+        if (NewServerId > move.NewServerId) {
+            return false;
+        }
+
+        if (VmId < move.VmId) {
+            return true;
+        }
+        if (VmId > move.VmId) {
+            return false;
+        }
+
+        return false;
+    }
 };
 
 i64 ServersCount, VmsCount;
@@ -102,33 +127,70 @@ void WriteOutput() {
     }
 }
 
+i64 CalculateScore() {
+    i64 movedMemory = 0;
+    for (auto& step : Steps) {
+        for (auto& move : step) {
+            movedMemory += Vms[move.VmId].Memory;
+        }
+    }
+    return Steps.size() * movedMemory + 1;
+}
+
 bool IsEnough(i64 serverId, i64 vmId) {
     return Servers[serverId].Cores >= Vms[vmId].Cores && Servers[serverId].Memory >= Vms[vmId].Memory;
 }
 
-void SimulateTransfer(TMove& move) {
+void SimulateTransfer(const TMove& move) {
     Servers[move.NewServerId].Cores -= Vms[move.VmId].Cores;
     Servers[move.NewServerId].Memory -= Vms[move.VmId].Memory;
 
     Allocation[move.VmId] = move.NewServerId;
 }
 
-void SimulateTransfer(TStep& step) {
+void SimulateTransfer(const TStep& step) {
     for (auto& move : step) {
         SimulateTransfer(move);
     }
 }
 
-void SimulateCleanup(TMove& move) {
+void SimulateCleanup(const TMove& move) {
     Servers[move.OldServerId].Cores += Vms[move.VmId].Cores;
     Servers[move.OldServerId].Memory += Vms[move.VmId].Memory;
 }
 
-void SimulateCleanup(TStep& step) {
+void SimulateCleanup(const TStep& step) {
     for (auto& move : step) {
         SimulateCleanup(move);
     }
 }
+
+
+void RollbackTransfer(const TMove& move) {
+    Servers[move.NewServerId].Cores += Vms[move.VmId].Cores;
+    Servers[move.NewServerId].Memory += Vms[move.VmId].Memory;
+
+    Allocation[move.VmId] = move.OldServerId;
+}
+
+void RollbackTransfer(const TStep& step) {
+    for (auto& move : step) {
+        RollbackTransfer(move);
+    }
+}
+
+
+void RollbackCleanup(const TMove& move) {
+    Servers[move.OldServerId].Cores -= Vms[move.VmId].Cores;
+    Servers[move.OldServerId].Memory -= Vms[move.VmId].Memory;
+}
+
+void RollbackCleanup(const TStep& step) {
+    for (auto& move : step) {
+        RollbackCleanup(move);
+    }
+}
+
 
 set<i64> CalculateMissedVms() {
     set<i64> misses;
@@ -226,6 +288,104 @@ void TransferMissedVms(set<i64>& missedVms) {
     Steps.pop_back();
 }
 
+void CompactTwoSteps(i64 targetStart, i64 missedStart) {
+    set<TMove> missedMoves;
+    for (i64 i = Steps.size() - 1; i >= missedStart; i--) {
+        RollbackCleanup(Steps[i]);
+        RollbackTransfer(Steps[i]);
+        for (auto& e : Steps.back()) {
+            missedMoves.insert(e);
+        }
+        Steps.pop_back();
+    }
+
+    vector<TResource> minResources = Servers;
+    for (i64 i = missedStart - 1; i >= targetStart; i--) {
+        RollbackCleanup(Steps[i]);
+
+        for (auto& e : Steps[i]) {
+            minResources[e.NewServerId].Cores = min(minResources[e.NewServerId].Cores, Servers[e.NewServerId].Cores);
+            minResources[e.NewServerId].Memory = min(minResources[e.NewServerId].Memory, Servers[e.NewServerId].Memory);
+
+            minResources[e.OldServerId].Cores = min(minResources[e.OldServerId].Cores, Servers[e.OldServerId].Cores);
+            minResources[e.OldServerId].Memory = min(minResources[e.OldServerId].Memory, Servers[e.OldServerId].Memory);
+        }
+
+        RollbackTransfer(Steps[i]);
+    }
+
+    for (i64 i = targetStart; i < missedStart; i++) {
+        vector<i64> networkUsage(ServersCount);
+        for (auto& e : Steps[i]) {
+            networkUsage[e.NewServerId] += 1;
+            networkUsage[e.OldServerId] += 1;
+            SimulateTransfer(e);
+        }
+
+        auto it = missedMoves.begin();
+        while (it != missedMoves.end()) {
+            if (networkUsage[it->OldServerId] >= 2) {
+                it++;
+                continue;
+            }
+            if (networkUsage[it->NewServerId] >= 2) {
+                it++;
+                continue;
+            }
+            if (!IsEnough(it->NewServerId, it->VmId)) {
+                it++;
+                continue;
+            }
+
+            bool enoughResources = minResources[it->NewServerId].Cores >= Vms[it->VmId].Cores && minResources[it->NewServerId].Memory >= Vms[it->VmId].Memory;
+
+            if (!enoughResources) {
+                it++;
+                continue;
+            }
+
+            networkUsage[it->NewServerId] += 1;
+            networkUsage[it->OldServerId] += 1;
+
+            SimulateTransfer(*it);
+            Steps[i].push_back(*it);
+            missedMoves.erase(it++);
+        }
+
+        SimulateCleanup(Steps[i]);
+    }
+
+    while (missedMoves.size()) {
+        Steps.push_back(TStep());
+         
+        vector<i64> networkUsage(ServersCount);
+        auto it = missedMoves.begin();
+        while (it != missedMoves.end()) {
+            if (networkUsage[it->OldServerId] >= 2) {
+                it++;
+                continue;
+            }
+            if (networkUsage[it->NewServerId] >= 2) {
+                it++;
+                continue;
+            }
+            if (!IsEnough(it->NewServerId, it->VmId)) {
+                it++;
+                continue;
+            }
+
+            networkUsage[it->NewServerId] += 1;
+            networkUsage[it->OldServerId] += 1;
+
+            SimulateTransfer(*it);
+            Steps.back().push_back(*it);
+            missedMoves.erase(it++);
+        }
+
+        SimulateCleanup(Steps.back());
+    }
+}
+
 int main(int argc, char* argv[]) {
     ios::sync_with_stdio(0); cin.tie(0); cout.tie(0); cout.precision(15); cout.setf(ios::fixed); cerr.precision(15); cerr.setf(ios::fixed);
 
@@ -236,13 +396,18 @@ int main(int argc, char* argv[]) {
     ReadInput();
 
     while (true) {
+        i64 targetStart = Steps.size();
         TransferGreedly();
+
         auto missedVms = CalculateMissedVms();
         if (missedVms.empty()) {
             break;
         }
 
+        i64 missedStart = Steps.size();
         TransferMissedVms(missedVms);
+
+        CompactTwoSteps(targetStart, missedStart);
     }
 
     WriteOutput();
