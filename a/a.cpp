@@ -43,6 +43,19 @@ const i64 inf = 1'000'000'000'000'000'000ll;
 
 const long double eps = 1e-8;
 
+struct TRandom {
+    using Type = i64;
+    mt19937 Rng;
+    uniform_int_distribution<Type> Dist;
+
+    TRandom() : Rng((chrono::steady_clock::now().time_since_epoch().count())), Dist(0ll, std::numeric_limits<Type>::max()) {
+    }
+
+    Type GetRandomNumber() {
+        return Dist(Rng);
+    }
+};
+
 struct TResource {
     i64 Cores;
     i64 Memory;
@@ -87,9 +100,55 @@ vector<TResource> Vms;
 vector<i64> Allocation;
 vector<i64> Target;
 
+vector<i64> Bonus;
+
 using TStep = vector<TMove>;
 vector<TStep> Steps;
 
+TRandom rng;
+
+void GenerateSample(i64 serversCount, i64 vmsCount, i64 lowVmMemoryLimit, i64 highVmMemoryLimit, i64 lowVmCoresLimit, i64 highVmCoresLimit) {
+    vector<TResource> servers(serversCount);
+    vector<TResource> targetServers(serversCount);
+    vector<TResource> allocationServers(serversCount);
+
+    vector<TResource> vms(vmsCount);
+    vector<i64> allocation(vmsCount);
+    vector<i64> target(vmsCount);
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        allocation[i] = rng.GetRandomNumber() % serversCount;
+        target[i] = rng.GetRandomNumber() % serversCount;
+        vms[i].Cores = lowVmCoresLimit + rng.GetRandomNumber() % (highVmCoresLimit - lowVmCoresLimit + 1);
+        vms[i].Memory = lowVmMemoryLimit + rng.GetRandomNumber() % (highVmMemoryLimit - lowVmMemoryLimit + 1);
+
+        allocationServers[allocation[i]].Cores += vms[i].Cores;
+        allocationServers[allocation[i]].Memory += vms[i].Memory;
+        targetServers[target[i]].Cores += vms[i].Cores;
+        targetServers[target[i]].Memory += vms[i].Memory;
+    }
+
+    for (i64 i = 0; i < serversCount; i++) {
+        servers[i].Cores = max(allocationServers[i].Cores, targetServers[i].Cores);
+        servers[i].Memory = max(allocationServers[i].Memory, targetServers[i].Memory);
+
+        //servers[i].Cores += highVmCoresLimit;
+        //servers[i].Memory += highVmMemoryLimit;
+    }
+
+    cout << serversCount << " " << vmsCount << endl;
+    for (i64 i = 0; i < serversCount; i++) {
+        cout << servers[i].Cores << " " << servers[i].Memory << endl;
+    }
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        cout << vms[i].Cores << " " << vms[i].Memory << endl;
+    }
+
+    for (i64 i = 0; i < vmsCount; i++) {
+        cout << allocation[i] << " " << target[i] << endl;
+    }
+}
 void ReadInput() {
     cin >> ServersCount >> VmsCount;
 
@@ -114,6 +173,8 @@ void ReadInput() {
         Servers[Allocation[i]].Cores -= Vms[i].Cores;
         Servers[Allocation[i]].Memory -= Vms[i].Memory;
     }
+
+    Bonus = vector<i64>(ServersCount);
 }
 
 void WriteOutput() {
@@ -229,6 +290,109 @@ void TransferGreedly() {
             networkUsage[Target[i]] += 1;
             SimulateTransfer(Steps.back().back());
             moved = true;
+        }
+
+        SimulateCleanup(Steps.back());
+    }
+    Steps.pop_back();
+}
+
+i64 minSteps = 0;
+
+void CalculateBonus() {
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Target[i] == Allocation[i]) {
+            continue;
+        }
+        Bonus[Target[i]] += 1;
+        Bonus[Allocation[i]] += 1;
+    }
+}
+
+void TransferWeighted() {
+    //vector<TResource> spare(ServersCount);
+    //for (i64 i = 0; i < VmsCount; i++) {
+    //    spare[Allocation[i]].Cores += Vms[i].Cores;
+    //    spare[Allocation[i]].Memory += Vms[i].Memory;
+
+    //    spare[Target[i]].Cores -= Vms[i].Cores;
+    //    spare[Target[i]].Memory -= Vms[i].Memory;
+    //}
+
+    /*
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Target[i] == Allocation[i]) {
+            continue;
+        }
+        spare[Target[i]].Cores += 1;
+        spare[Allocation[i]].Cores += 1;
+    }
+
+
+    for (i64 i = 0; i < ServersCount; i++) {
+        //cerr << spare[i].Cores << " ";
+        minSteps = max(minSteps, spare[i].Cores);
+    }
+    //cerr << endl;
+    */
+
+    /*
+    for (i64 i = 0; i < ServersCount; i++) {
+        cerr << Bonus[i] << " ";
+    }
+    cerr << endl;
+    */
+
+    vector<i64> networkUsage(ServersCount);
+    auto getScore = [&](i64 vmId) -> i64 {
+        if (!IsEnough(Target[vmId], vmId) || networkUsage[Target[vmId]] >= 2 || networkUsage[Allocation[vmId]] >= 2) {
+            return inf;
+        }
+        //i64 val = spare[Allocation[vmId]].Cores * spare[Target[vmId]].Cores;
+        //i64 res = (i64)pow(val, 2 - networkUsage[Target[vmId]]);
+        //i64 res = -val * (networkUsage[Target[vmId]] + networkUsage[Allocation[vmId]] == 0 ? 1'000'000 : 1);
+        //i64 res = -networkUsage[Target[vmId]];
+        i64 val = Bonus[Allocation[vmId]] * Bonus[Target[vmId]];
+        return -val;
+    };
+
+
+    bool moved = true;
+    while (moved) {
+        moved = false;
+        Steps.push_back(TStep());
+
+        networkUsage = vector<i64>(ServersCount);
+        set<pair<i64, i64>> q;
+        for (i64 i = 0; i < VmsCount; i++) {
+            if (Target[i] == Allocation[i]) {
+                continue;
+            }
+            q.insert({ getScore(i), i });
+        }
+
+        while (!q.empty()) {
+            i64 i = q.begin()->second;
+            auto score = getScore(i);
+
+            if (q.begin()->first != score) {
+                q.erase(q.begin());
+                q.insert({ score, i });
+                continue;
+            }
+
+            if (score == inf) {
+                break;
+            }
+
+            Steps.back().push_back({ Allocation[i], Target[i], i });
+            networkUsage[Allocation[i]] += 1;
+            networkUsage[Target[i]] += 1;
+            Bonus[Target[i]] -= 1;
+            Bonus[Allocation[i]] -= 1;
+            SimulateTransfer(Steps.back().back());
+            moved = true;
+            q.erase(q.begin());
         }
 
         SimulateCleanup(Steps.back());
@@ -386,58 +550,6 @@ void CompactTwoSteps(i64 targetStart, i64 missedStart) {
     }
 }
 
-struct TRandom {
-    using Type = i64;
-    mt19937 Rng;
-    uniform_int_distribution<Type> Dist;
-
-    TRandom() : Rng((chrono::steady_clock::now().time_since_epoch().count())), Dist(0ll, std::numeric_limits<Type>::max()) {
-    }
-
-    Type GetRandomNumber() {
-        return Dist(Rng);
-    }
-};
-
-void GenerateSample(i64 serversCount, i64 vmsCount, i64 lowVmMemoryLimit, i64 highVmMemoryLimit, i64 lowVmCoresLimit, i64 highVmCoresLimit) {
-    vector<TResource> servers(serversCount);
-    vector<TResource> vms(vmsCount);
-    vector<i64> allocation(vmsCount);
-    vector<i64> target(vmsCount);
-
-    TRandom rng;
-
-    for (i64 i = 0; i < vmsCount; i++) {
-        allocation[i] = rng.GetRandomNumber() % serversCount;
-        target[i] = rng.GetRandomNumber() % serversCount;
-        vms[i].Cores = lowVmCoresLimit + rng.GetRandomNumber() % (highVmCoresLimit - lowVmCoresLimit + 1);
-        vms[i].Memory = lowVmMemoryLimit + rng.GetRandomNumber() % (highVmMemoryLimit - lowVmMemoryLimit + 1);
-
-        servers[allocation[i]].Cores += vms[i].Cores;
-        servers[allocation[i]].Memory += vms[i].Memory;
-        servers[target[i]].Cores += vms[i].Cores;
-        servers[target[i]].Memory += vms[i].Memory;
-    }
-
-    for (i64 i = 0; i < serversCount; i++) {
-        servers[i].Cores += highVmCoresLimit;
-        servers[i].Memory += highVmMemoryLimit;
-    }
-
-    cout << serversCount << " " << vmsCount << endl;
-    for (i64 i = 0; i < serversCount; i++) {
-        cout << servers[i].Cores << " " << servers[i].Memory << endl;
-    }
-
-    for (i64 i = 0; i < vmsCount; i++) {
-        cout << vms[i].Cores << " " << vms[i].Memory << endl;
-    }
-
-    for (i64 i = 0; i < vmsCount; i++) {
-        cout << allocation[i] << " " << target[i] << endl;
-    }
-}
-
 
 int main(int argc, char* argv[]) {
     ios::sync_with_stdio(0); cin.tie(0); cout.tie(0); cout.precision(15); cout.setf(ios::fixed); cerr.precision(15); cerr.setf(ios::fixed);
@@ -446,31 +558,106 @@ int main(int argc, char* argv[]) {
         cerr << "i64 != long long int" << endl;
     }
 
+
     //GenerateSample(1'000, 1'000'000, 1, 200, 1, 500);
-    //GenerateSample(100, 10'000, 1, 200, 1, 500);
-    //return 0;
+    if (argc > 1 && argv[1][0] == 'g') {
+        GenerateSample(100, 1'000, 1, 200, 1, 500);
+        return 0;
+    }
 
     ReadInput();
 
+    auto start = high_resolution_clock::now();
+
+    i64 mins = inf;
+
+    i64 bestCnt = inf;
+    i64 bestScore = inf;
+    vector<TStep> bestSteps;
+
+    i64 cnt = 0;
     while (true) {
+        cnt += 1;
+
+        CalculateBonus();
+
         i64 targetStart = Steps.size();
-        TransferGreedly();
+        TransferWeighted();
+        //TransferGreedly();
 
         auto missedVms = CalculateMissedVms();
-        if (missedVms.empty()) {
+        cerr << "Missing " << missedVms.size() << " vms; " << Steps.size() << " steps" << endl;
+
+        mins = min(mins, (i64)missedVms.size());
+
+        auto current = high_resolution_clock::now();
+        auto duration = duration_cast<microseconds>(current - start);
+
+        if (duration.count() > 5'000'000) {
             break;
         }
 
-        i64 missedStart = Steps.size();
-        TransferMissedVms(missedVms);
 
-        CompactTwoSteps(targetStart, missedStart);
+        if (missedVms.size() == 0) {
+            if (bestScore > CalculateScore()) {
+                bestScore = CalculateScore();
+                bestSteps = Steps;
+            }
+            for (i64 i = Steps.size() - 1; i >= 0; i--) {
+                RollbackCleanup(Steps[i]);
+                RollbackTransfer(Steps[i]);
+            }
+
+            if (missedVms.size() == 0) {
+                for (auto& e : Steps.back()) {
+                    Bonus[e.NewServerId] += 1;
+                    Bonus[e.OldServerId] += 1;
+                }
+            }
+            Steps.clear();
+
+            continue;
+        }
+        else {
+            auto BonusBackup = Bonus;
+            TransferMissedVms(missedVms);
+            CalculateBonus();
+            TransferWeighted();
+
+            missedVms = CalculateMissedVms();
+            /*
+            if (missedVms.size() == 0) {
+                if (bestScore > CalculateScore()) {
+                    bestScore = CalculateScore();
+                    bestSteps = Steps;
+                }
+            }
+            */
+
+            for (i64 i = Steps.size() - 1; i >= 0; i--) {
+                RollbackCleanup(Steps[i]);
+                RollbackTransfer(Steps[i]);
+            }
+            Steps.clear();
+
+            Bonus = BonusBackup;
+        }
     }
 
-    //WriteOutput();
+    Steps = bestSteps;
 
-    i64 R = CalculateScore();
-    cerr << R << " = " << Steps.size() << " * " << R / Steps.size() << endl;
+    if (argc > 1 && argv[1][0] == 's') {
+        for (i64 i = 0; i < VmsCount; i++) {
+            if (Target[i] != Allocation[i]) {
+                cerr << "Missmatch for VM # " << i << endl;
+                return 0;
+            }
+        }
+        i64 R = CalculateScore();
+        cerr << R << " = " << Steps.size() << " * " << R / Steps.size() << endl;
+        return 0;
+    }
 
+    WriteOutput();
     return 0;
 }
