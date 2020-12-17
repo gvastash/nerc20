@@ -550,6 +550,102 @@ void CompactTwoSteps(i64 targetStart, i64 missedStart) {
     }
 }
 
+i64 EstimateSteps() {
+    vector<i64> to(ServersCount);
+    vector<i64> fr(ServersCount);
+
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Target[i] == Allocation[i]) {
+            continue;
+        }
+        to[Target[i]] += 1;
+        fr[Allocation[i]] += 1;
+    }
+
+    i64 R = 0;
+    for (i64 i = 0; i < ServersCount; i++) {
+        R = max(R, to[i] + fr[i]);
+    }
+
+    return R;
+}
+
+struct TVmsComparator {
+    bool operator() (i64 vm1, i64 vm2)  const {
+        auto GetScore = [&](i64 vmId) -> i64 {
+            return Vms[vmId].Cores * Vms[vmId].Memory;
+        };
+
+        return GetScore(vm1) < GetScore(vm2);
+    }
+};
+
+void MaximizeMoves() {
+    vector<i64> filterdVms;
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Allocation[i] == Target[i]) {
+            continue;
+        }
+        if (!IsEnough(Target[i], i)) {
+            continue;
+        }
+        filterdVms.push_back(i);
+    }
+
+    vector<vector<i64>> to(ServersCount);
+    vector<vector<i64>> from(ServersCount);
+
+    for (auto vmId : filterdVms) {
+        to[Target[vmId]].push_back(vmId);
+        from[Allocation[vmId]].push_back(vmId);
+    }
+
+    for (i64 i = 0; i < ServersCount; i++) {
+        sort(to[i].begin(), to[i].end());
+        sort(from[i].begin(), from[i].end());
+    }
+
+    Steps.push_back(TStep());
+
+    vector<i64> network(ServersCount);
+
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Allocation[i] == Target[i]) {
+            continue;
+        }
+        if (!IsEnough(Target[i], i)) {
+            continue;
+        }
+        if (network[Target[i]] >= 2 || network[Allocation[i]] >= 2) {
+            continue;
+        }
+        if (to[Allocation[i]].size()) {
+            continue;
+        }
+        Steps.back().push_back({ Allocation[i], Target[i], i });
+        network[Allocation[i]] += 1;
+        network[Target[i]] += 1;
+        SimulateTransfer(Steps.back().back());
+    }
+
+    for (i64 i = 0; i < VmsCount; i++) {
+        if (Allocation[i] == Target[i]) {
+            continue;
+        }
+        if (!IsEnough(Target[i], i)) {
+            continue;
+        }
+        if (network[Target[i]] >= 2 || network[Allocation[i]] >= 2) {
+            continue;
+        }
+        Steps.back().push_back({ Allocation[i], Target[i], i });
+        network[Allocation[i]] += 1;
+        network[Target[i]] += 1;
+        SimulateTransfer(Steps.back().back());
+    }
+
+    SimulateCleanup(Steps.back());
+}
 
 int main(int argc, char* argv[]) {
     ios::sync_with_stdio(0); cin.tie(0); cout.tie(0); cout.precision(15); cout.setf(ios::fixed); cerr.precision(15); cerr.setf(ios::fixed);
@@ -566,6 +662,30 @@ int main(int argc, char* argv[]) {
     }
 
     ReadInput();
+
+    i64 firstStepsCnt = 0;
+
+    while (true) {
+        MaximizeMoves();
+        if (Steps.back().empty()) {
+            Steps.pop_back();
+            break;
+        }
+    }
+
+    /*
+    cerr << "Steps = " << Steps.size() << endl;
+    {
+        auto missedVms = CalculateMissedVms();
+        cerr << "MissedVmsCount = " << missedVms.size() << endl;
+    }
+    */
+
+    while (Steps.size() > firstStepsCnt) {
+        RollbackCleanup(Steps.back());
+        RollbackTransfer(Steps.back());
+        Steps.pop_back();
+    }
 
     auto start = high_resolution_clock::now();
 
@@ -586,14 +706,14 @@ int main(int argc, char* argv[]) {
         //TransferGreedly();
 
         auto missedVms = CalculateMissedVms();
-        cerr << "Missing " << missedVms.size() << " vms; " << Steps.size() << " steps" << endl;
+        //cerr << "Missing " << missedVms.size() << " vms; " << Steps.size() << " steps" << endl;
 
         mins = min(mins, (i64)missedVms.size());
 
         auto current = high_resolution_clock::now();
         auto duration = duration_cast<microseconds>(current - start);
 
-        if (duration.count() > 5'000'000) {
+        if (duration.count() > 5'000'000ll) {
             break;
         }
 
@@ -603,10 +723,6 @@ int main(int argc, char* argv[]) {
                 bestScore = CalculateScore();
                 bestSteps = Steps;
             }
-            for (i64 i = Steps.size() - 1; i >= 0; i--) {
-                RollbackCleanup(Steps[i]);
-                RollbackTransfer(Steps[i]);
-            }
 
             if (missedVms.size() == 0) {
                 for (auto& e : Steps.back()) {
@@ -614,11 +730,8 @@ int main(int argc, char* argv[]) {
                     Bonus[e.OldServerId] += 1;
                 }
             }
-            Steps.clear();
-
-            continue;
         }
-        else {
+        else if (false) {
             auto BonusBackup = Bonus;
             TransferMissedVms(missedVms);
             CalculateBonus();
@@ -634,27 +747,34 @@ int main(int argc, char* argv[]) {
             }
             */
 
-            for (i64 i = Steps.size() - 1; i >= 0; i--) {
-                RollbackCleanup(Steps[i]);
-                RollbackTransfer(Steps[i]);
-            }
-            Steps.clear();
-
             Bonus = BonusBackup;
+        }
+
+        while (Steps.size() > firstStepsCnt) {
+            RollbackCleanup(Steps.back());
+            RollbackTransfer(Steps.back());
+            Steps.pop_back();
         }
     }
 
     Steps = bestSteps;
 
+    auto missedVms = CalculateMissedVms();
+    cerr << "Missing " << missedVms.size() << " vms; " << Steps.size() << " steps" << endl;
+
+    for (auto& e : Steps) {
+        cerr << e.size() << endl;
+    }
+
     if (argc > 1 && argv[1][0] == 's') {
         for (i64 i = 0; i < VmsCount; i++) {
             if (Target[i] != Allocation[i]) {
-                cerr << "Missmatch for VM # " << i << endl;
+                cerr << "Missmatch for VM # " << i << "; " << " bestSteps = " << bestCnt << endl;
                 return 0;
             }
         }
         i64 R = CalculateScore();
-        cerr << R << " = " << Steps.size() << " * " << R / Steps.size() << endl;
+        cerr << R << " = " << Steps.size() << " * " << R / Steps.size() << "; " << cnt << " check " << endl;
         return 0;
     }
 
